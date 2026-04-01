@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Felt & Fortune — No-Limit Hold'em</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --felt: #0f4c2a;
+    --felt-light: #1a6640;
+    --gold: #c9a84c;
+    --gold-light: #e8c96d;
+    --cream: #f5ead6;
+    --cream-dark: #e8d5b0;
+    --dark: #0a0a0a;
+    --card-red: #c0392b;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--dark);
+    background-image: 
+      radial-gradient(ellipse at 20% 50%, rgba(15, 76, 42, 0.3) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% 50%, rgba(201, 168, 76, 0.1) 0%, transparent 60%);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'DM Mono', monospace;
+    color: var(--cream);
+    overflow: hidden;
+  }
+
+  .bg-pattern {
+    position: fixed; inset: 0; z-index: 0; opacity: 0.04;
+    background-image: repeating-linear-gradient(
+      45deg,
+      var(--gold) 0, var(--gold) 1px,
+      transparent 1px, transparent 20px
+    );
+    pointer-events: none;
+  }
+
+  .container {
+    position: relative; z-index: 1;
+    width: 100%; max-width: 520px;
+    padding: 0 24px;
+    animation: fadeUp 0.8s ease both;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(30px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .logo {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+
+  .logo-suit {
+    font-size: 48px;
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    animation: suitsSpin 0.6s ease both 0.3s;
+  }
+
+  @keyframes suitsSpin {
+    from { opacity: 0; transform: scale(0.5) rotate(-10deg); }
+    to { opacity: 1; transform: scale(1) rotate(0); }
+  }
+
+  .spade, .club { color: var(--cream); }
+  .heart, .diamond { color: #e74c3c; }
+
+  h1 {
+    font-family: 'Playfair Display', serif;
+    font-size: 42px;
+    font-weight: 900;
+    letter-spacing: -1px;
+    line-height: 1;
+    color: var(--gold);
+    text-shadow: 0 2px 20px rgba(201, 168, 76, 0.4);
+  }
+
+  .tagline {
+    font-size: 11px;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: var(--cream-dark);
+    margin-top: 8px;
+    opacity: 0.7;
+  }
+
+  .card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(201, 168, 76, 0.2);
+    border-radius: 16px;
+    padding: 32px;
+    backdrop-filter: blur(20px);
+    margin-bottom: 16px;
+    animation: fadeUp 0.8s ease both;
+  }
+
+  .card:nth-child(2) { animation-delay: 0.1s; }
+  .card:nth-child(3) { animation-delay: 0.2s; }
+
+  .card-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 18px;
+    color: var(--gold);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .card-title::before {
+    content: '';
+    display: block;
+    width: 4px; height: 18px;
+    background: var(--gold);
+    border-radius: 2px;
+  }
+
+  .input-group {
+    margin-bottom: 16px;
+  }
+
+  label {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--cream-dark);
+    opacity: 0.6;
+    margin-bottom: 8px;
+  }
+
+  input {
+    width: 100%;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(201, 168, 76, 0.2);
+    border-radius: 8px;
+    padding: 14px 16px;
+    color: var(--cream);
+    font-family: 'DM Mono', monospace;
+    font-size: 14px;
+    outline: none;
+    transition: all 0.2s;
+  }
+
+  input:focus {
+    border-color: var(--gold);
+    background: rgba(201, 168, 76, 0.08);
+    box-shadow: 0 0 0 3px rgba(201, 168, 76, 0.1);
+  }
+
+  input::placeholder { color: rgba(245,234,214,0.3); }
+
+  input[style*="text-transform: uppercase"] { text-transform: uppercase; }
+
+  .btn {
+    width: 100%;
+    padding: 16px;
+    border: none;
+    border-radius: 10px;
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .btn::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: white;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  .btn:hover::after { opacity: 0.05; }
+  .btn:active { transform: scale(0.98); }
+
+  .btn-primary {
+    background: linear-gradient(135deg, var(--gold) 0%, #a8842d 100%);
+    color: var(--dark);
+  }
+
+  .btn-secondary {
+    background: rgba(255,255,255,0.06);
+    color: var(--cream);
+    border: 1px solid rgba(201, 168, 76, 0.3);
+  }
+
+  .btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin: 24px 0;
+    opacity: 0.3;
+  }
+
+  .divider::before, .divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--gold);
+  }
+
+  .divider span { font-size: 11px; letter-spacing: 2px; }
+
+  .error {
+    background: rgba(192, 57, 43, 0.15);
+    border: 1px solid rgba(192, 57, 43, 0.4);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 12px;
+    color: #e74c3c;
+    margin-top: 12px;
+    display: none;
+  }
+
+  .features {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    margin-top: 32px;
+    opacity: 0.4;
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  .features span { display: flex; align-items: center; gap: 6px; }
+</style>
+</head>
+<body>
+<div class="bg-pattern"></div>
+<div class="container">
+  <div class="logo">
+    <div class="logo-suit">
+      <span class="spade">♠</span>
+      <span class="heart">♥</span>
+      <span class="diamond">♦</span>
+      <span class="club">♣</span>
+    </div>
+    <h1>Felt & Fortune</h1>
+    <p class="tagline">No-Limit Texas Hold'em · Sit & Go</p>
+  </div>
+
+  <!-- Create Game -->
+  <div class="card">
+    <div class="card-title">Host a Table</div>
+    <div class="input-group">
+      <label>Your Name</label>
+      <input type="text" id="hostName" placeholder="Card Shark" maxlength="20" autocomplete="off">
+    </div>
+    <button class="btn btn-primary" onclick="createGame()">Deal Me In — Create Game</button>
+    <div class="error" id="createError"></div>
+  </div>
+
+  <div class="divider"><span>or</span></div>
+
+  <!-- Join Game -->
+  <div class="card">
+    <div class="card-title">Join a Table</div>
+    <div class="input-group">
+      <label>Your Name</label>
+      <input type="text" id="joinName" placeholder="The Maverick" maxlength="20" autocomplete="off">
+    </div>
+    <div class="input-group">
+      <label>Game Code</label>
+      <input type="text" id="gameCode" placeholder="ABCD1234" maxlength="8" autocomplete="off"
+             style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()">
+    </div>
+    <button class="btn btn-secondary" onclick="joinGame()">Take a Seat</button>
+    <div class="error" id="joinError"></div>
+  </div>
+
+  <div class="features">
+    <span>♠ 2–9 Players</span>
+    <span>♥ No-Limit Hold'em</span>
+    <span>♦ Sit & Go</span>
+  </div>
+</div>
+
+<script>
+async function createGame() {
+  const name = document.getElementById('hostName').value.trim();
+  if (!name) { showError('createError', 'Enter your name'); return; }
+
+  const btn = document.querySelector('.btn-primary');
+  btn.disabled = true;
+  btn.textContent = 'Shuffling cards...';
+
+  try {
+    const res = await fetch('/api/games', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostName: name })
+    });
+    const data = await res.json();
+    if (data.error) { showError('createError', data.error); return; }
+
+    // Store our player ID
+    sessionStorage.setItem('playerId', data.playerId);
+    sessionStorage.setItem('gameId', data.gameId);
+    window.location.href = `/game/${data.gameId}`;
+  } catch (e) {
+    showError('createError', 'Connection error. Try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Deal Me In — Create Game';
+  }
+}
+
+async function joinGame() {
+  const name = document.getElementById('joinName').value.trim();
+  const code = document.getElementById('gameCode').value.trim().toUpperCase();
+  if (!name) { showError('joinError', 'Enter your name'); return; }
+  if (!code) { showError('joinError', 'Enter game code'); return; }
+
+  const btn = document.querySelector('.btn-secondary');
+  btn.disabled = true;
+  btn.textContent = 'Finding table...';
+
+  try {
+    const res = await fetch(`/api/games/${code}/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerName: name })
+    });
+    const data = await res.json();
+    if (data.error) { showError('joinError', data.error); return; }
+
+    sessionStorage.setItem('playerId', data.playerId);
+    sessionStorage.setItem('gameId', data.gameId);
+    window.location.href = `/game/${data.gameId}`;
+  } catch (e) {
+    showError('joinError', 'Connection error. Try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Take a Seat';
+  }
+}
+
+function showError(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 4000);
+}
+
+// Check URL for game code
+const path = window.location.pathname;
+const match = path.match(/\/game\/([A-Z0-9]+)/i);
+if (match) {
+  document.getElementById('gameCode').value = match[1].toUpperCase();
+}
+
+// Enter key support
+document.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') {
+    const focused = document.activeElement;
+    if (focused.id === 'hostName') createGame();
+    else if (['joinName','gameCode'].includes(focused.id)) joinGame();
+  }
+});
+</script>
+</body>
+</html>

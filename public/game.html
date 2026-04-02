@@ -1017,9 +1017,10 @@ let isHost = false;
 let myPlayerIndex = -1;
 let actionTimerInterval = null;
 let chatOpen = false;
+let handResultTimeout = null;
 
-// ─── SOCKET SETUP ───
-const socket = io();
+// ─── SOCKET ───
+const socket = io({ reconnectionDelay: 500, reconnectionAttempts: 20 });
 
 socket.on('connect', () => {
   document.getElementById('disconnected-notice').style.display = 'none';
@@ -1030,9 +1031,13 @@ socket.on('disconnect', () => {
   document.getElementById('disconnected-notice').style.display = 'block';
 });
 
+socket.on('connect_error', () => {
+  document.getElementById('disconnected-notice').style.display = 'block';
+});
+
 socket.on('joined', (data) => {
   isHost = data.isHost;
-  updateLobby();
+  updateLobbyHost();
 });
 
 socket.on('game_state', (state) => {
@@ -1053,7 +1058,7 @@ socket.on('game_over', (data) => {
 });
 
 socket.on('blind_level_up', (data) => {
-  addChat(`⚡ Blinds increased to ${data.blinds.small}/${data.blinds.big}${data.blinds.ante ? ` (ante ${data.blinds.ante})` : ''}`, true);
+  addChat(`⚡ Blinds up: ${data.blinds.small}/${data.blinds.big}${data.blinds.ante ? ` (ante ${data.blinds.ante})` : ''}`, true);
 });
 
 socket.on('chat', (data) => {
@@ -1061,13 +1066,17 @@ socket.on('chat', (data) => {
 });
 
 socket.on('player_connected', (data) => {
-  addChat(`${data.name} connected`, true);
+  if (gameState) {
+    const p = gameState.players.find(p => p.id === data.playerId);
+    if (p) addChat(`${p.name} connected`, true);
+  }
 });
 
 socket.on('player_disconnected', (data) => {
-  if (!gameState) return;
-  const p = gameState.players.find(p => p.id === data.playerId);
-  if (p) addChat(`${p.name} disconnected`, true);
+  if (gameState) {
+    const p = gameState.players.find(p => p.id === data.playerId);
+    if (p) addChat(`${p.name} disconnected`, true);
+  }
 });
 
 socket.on('error', (data) => {
@@ -1075,13 +1084,11 @@ socket.on('error', (data) => {
 });
 
 // ─── RENDER ───
+const WAITING = 'waiting';
+
 function render(state) {
   if (!state) return;
 
-  const WAITING = 'waiting';
-  const GAME_OVER = 'game_over';
-
-  // Lobby vs table
   const inGame = state.state !== WAITING;
   document.getElementById('lobby-panel').style.display = inGame ? 'none' : 'flex';
   document.getElementById('table-container').style.display = inGame ? 'flex' : 'none';
@@ -1100,16 +1107,11 @@ function render(state) {
 }
 
 function renderLobby(state) {
-  const code = document.getElementById('lobby-code');
-  const link = document.getElementById('lobby-link');
-  const playerList = document.getElementById('player-list');
-  const startBtn = document.getElementById('start-btn');
-  const waitingMsg = document.getElementById('waiting-msg');
-
-  code.textContent = state.id;
-  link.textContent = window.location.origin + '/game/' + state.id;
+  document.getElementById('lobby-code').textContent = state.id;
+  document.getElementById('lobby-link').textContent = window.location.origin + '/game/' + state.id;
   document.getElementById('game-code-btn').textContent = state.id;
 
+  const playerList = document.getElementById('player-list');
   playerList.innerHTML = '';
   for (const p of state.players) {
     const li = document.createElement('li');
@@ -1123,87 +1125,93 @@ function renderLobby(state) {
     playerList.appendChild(li);
   }
 
+  updateLobbyHost(state);
+}
+
+function updateLobbyHost(state) {
+  const s = state || gameState;
+  const startBtn = document.getElementById('start-btn');
+  const waitingMsg = document.getElementById('waiting-msg');
   if (isHost) {
     startBtn.style.display = 'block';
-    startBtn.disabled = state.players.length < 2;
-    startBtn.textContent = state.players.length < 2 ? `Need ${2 - state.players.length} more player` : `Start Game (${state.players.length} players)`;
     waitingMsg.style.display = 'none';
+    if (s) {
+      startBtn.disabled = s.players.length < 2;
+      startBtn.textContent = s.players.length < 2
+        ? `Need ${2 - s.players.length} more player`
+        : `Start Game (${s.players.length} players)`;
+    }
   } else {
     startBtn.style.display = 'none';
     waitingMsg.style.display = 'block';
-    waitingMsg.textContent = `${state.players.length} player${state.players.length !== 1 ? 's' : ''} at table — waiting for host...`;
+    if (s) waitingMsg.textContent = `${s.players.length} player${s.players.length !== 1 ? 's' : ''} — waiting for host...`;
   }
 }
 
 function renderHeader(state) {
-  const blinds = state.blinds;
+  const { small, big, ante } = state.blinds;
   document.getElementById('blind-info').textContent =
-    `Blinds: ${blinds.small}/${blinds.big}${blinds.ante ? ` (ante ${blinds.ante})` : ''}`;
+    `Blinds: ${small}/${big}${ante ? ` · ante ${ante}` : ''}`;
   document.getElementById('hand-num').textContent = `Hand #${state.handNumber}`;
   document.getElementById('game-code-btn').textContent = state.id;
 
-  // Blind timer
-  const timeLeft = state.blindTimeLeft;
+  // Blind level timer bar
   const totalTime = 10 * 60 * 1000;
-  const pct = Math.min(100, (timeLeft / totalTime) * 100);
+  const pct = Math.min(100, (state.blindTimeLeft / totalTime) * 100);
   document.getElementById('blind-bar').style.width = pct + '%';
-  const mins = Math.floor(timeLeft / 60000);
-  const secs = Math.floor((timeLeft % 60000) / 1000);
+  const mins = Math.floor(state.blindTimeLeft / 60000);
+  const secs = Math.floor((state.blindTimeLeft % 60000) / 1000);
   document.getElementById('blind-timer-text').textContent =
-    `Next level: ${mins}:${secs.toString().padStart(2, '0')}`;
+    `Next: ${mins}:${secs.toString().padStart(2, '0')}`;
 
-  // Action timer
+  // Action timer bar
+  clearInterval(actionTimerInterval);
   if (state.currentPlayerIndex >= 0 && state.actionTimeLeft > 0) {
-    const pct = (state.actionTimeLeft / state.actionTimerDuration) * 100;
-    document.getElementById('action-timer-fill').style.width = pct + '%';
-    startActionTimerUI(state.actionTimeLeft, state.actionTimerDuration);
+    let remaining = state.actionTimeLeft;
+    const total = state.actionTimerDuration;
+    const fill = document.getElementById('action-timer-fill');
+    fill.style.width = ((remaining / total) * 100) + '%';
+    fill.style.background = 'var(--gold)';
+    actionTimerInterval = setInterval(() => {
+      remaining -= 100;
+      if (remaining <= 0) {
+        clearInterval(actionTimerInterval);
+        fill.style.width = '0%';
+        return;
+      }
+      const p = (remaining / total) * 100;
+      fill.style.width = p + '%';
+      fill.style.background = p < 20 ? '#e74c3c' : p < 40 ? '#e67e22' : 'var(--gold)';
+    }, 100);
   } else {
     document.getElementById('action-timer-fill').style.width = '0%';
-    clearInterval(actionTimerInterval);
   }
 }
 
-function startActionTimerUI(timeLeft, total) {
-  clearInterval(actionTimerInterval);
-  let remaining = timeLeft;
-  actionTimerInterval = setInterval(() => {
-    remaining -= 100;
-    if (remaining <= 0) {
-      clearInterval(actionTimerInterval);
-      document.getElementById('action-timer-fill').style.width = '0%';
-      return;
-    }
-    const fill = document.getElementById('action-timer-fill');
-    const pct = (remaining / total) * 100;
-    fill.style.width = pct + '%';
-    fill.style.background = pct < 25 ? '#e74c3c' : pct < 50 ? '#e67e22' : 'var(--gold)';
-  }, 100);
-}
-
-// ─── TABLE RENDERING ───
+// ─── TABLE ───
 const SEAT_POSITIONS = [
-  // 9 seat positions as percentages (top:%, left:%, transform offsets)
-  { top: '78%', left: '50%', tx: '-50%', ty: '0' },   // 0: bottom center (hero default)
-  { top: '78%', left: '18%', tx: '-50%', ty: '0' },   // 1: bottom left
-  { top: '55%', left: '2%',  tx: '0',    ty: '-50%' }, // 2: left
-  { top: '20%', left: '10%', tx: '-50%', ty: '-50%' }, // 3: top left
-  { top: '8%',  left: '35%', tx: '-50%', ty: '0' },   // 4: top left-center
-  { top: '8%',  left: '65%', tx: '-50%', ty: '0' },   // 5: top right-center
-  { top: '20%', left: '90%', tx: '-50%', ty: '-50%' }, // 6: top right
-  { top: '55%', left: '98%', tx: '-100%',ty: '-50%' }, // 7: right
-  { top: '78%', left: '82%', tx: '-50%', ty: '0' },   // 8: bottom right
+  { top: '80%', left: '50%', tx: '-50%', ty: '0' },
+  { top: '80%', left: '18%', tx: '-50%', ty: '0' },
+  { top: '52%', left: '1%',  tx: '0',    ty: '-50%' },
+  { top: '15%', left: '10%', tx: '-50%', ty: '0' },
+  { top: '5%',  left: '33%', tx: '-50%', ty: '0' },
+  { top: '5%',  left: '67%', tx: '-50%', ty: '0' },
+  { top: '15%', left: '90%', tx: '-50%', ty: '0' },
+  { top: '52%', left: '99%', tx: '-100%',ty: '-50%' },
+  { top: '80%', left: '82%', tx: '-50%', ty: '0' },
 ];
 
-const BET_OFFSETS = [
-  { top: '-30px', left: '0' },
-  { top: '-30px', left: '30px' },
-  { top: '10px', left: '60px' },
-  { top: '50px', left: '30px' },
-  { top: '40px', left: '0' },
-  { top: '40px', left: '0' },
-  { top: '50px', left: '-30px' },
-  { top: '10px', left: '-70px' },
-  { top: '-30px', left: '-30px' },
+// Where to put the bet chip relative to each seat position
+const BET_ANCHOR = [
+  { top: '-28px', left: '50%', ltx: '-50%' },   // 0 bottom
+  { top: '-28px', left: '70%', ltx: '0' },       // 1 bottom-left
+  { top: '0',     left: '90px',ltx: '0' },       // 2 left
+  { top: '70px',  left: '50%', ltx: '-50%' },    // 3 top-left
+  { top: '70px',  left: '50%', ltx: '-50%' },    // 4 top
+  { top: '70px',  left: '50%', ltx: '-50%' },    // 5 top
+  { top: '70px',  left: '50%', ltx: '-50%' },    // 6 top-right
+  { top: '0',     left: '-70px',ltx: '0' },      // 7 right
+  { top: '-28px', left: '30%', ltx: '-100%' },   // 8 bottom-right
 ];
 
 function renderTable(state) {
@@ -1211,170 +1219,171 @@ function renderTable(state) {
   seatsEl.innerHTML = '';
 
   const numPlayers = state.players.length;
-
-  // Assign visual seat positions
-  // Hero sits at position 0 (bottom center), others distributed around
-  let heroSeatIndex = myPlayerIndex >= 0 ? myPlayerIndex : 0;
+  const heroSeatIndex = myPlayerIndex >= 0 ? myPlayerIndex : 0;
 
   for (let i = 0; i < numPlayers; i++) {
     const visualPos = (i - heroSeatIndex + numPlayers) % numPlayers;
-    const posConfig = SEAT_POSITIONS[visualPos];
+    const pos = SEAT_POSITIONS[visualPos] || SEAT_POSITIONS[0];
+    const betPos = BET_ANCHOR[visualPos] || BET_ANCHOR[0];
     const player = state.players[i];
     const isActive = i === state.currentPlayerIndex;
     const isMe = player.id === playerId;
     const isDealer = i === state.dealerIndex;
     const isSB = i === state.sbIndex;
     const isBB = i === state.bbIndex;
+    const isEliminated = player.finishPosition !== null && player.chips === 0;
 
-    const seatEl = document.createElement('div');
-    seatEl.className = 'player-seat' + (player.bet > 0 ? ' has-bet' : '');
-    seatEl.style.cssText = `
-      top: ${posConfig.top};
-      left: ${posConfig.left};
-      transform: translate(${posConfig.tx}, ${posConfig.ty});
-    `;
-    seatEl.setAttribute('data-pid', player.id);
-
+    // Build avatar classes
     let avatarClass = 'seat-avatar';
-    if (isActive && !player.folded) avatarClass += ' active-player';
+    if (isActive && !player.folded && !player.allIn) avatarClass += ' active-player';
     if (player.folded) avatarClass += ' folded-player';
-    if (player.chips === 0 && player.finishPosition !== null) avatarClass += ' eliminated';
-    if (isMe) avatarClass += ' my-seat';
+    if (isEliminated) avatarClass += ' eliminated';
+    if (isMe && !isEliminated) avatarClass += ' my-seat';
 
     const emoji = getPlayerEmoji(player.name);
 
-    // Cards for this player
+    // Cards shown in seat (only during a hand, not during waiting/hand_over result phase)
     let cardsHtml = '';
-    if (player.hasCards && state.state !== 'waiting' && state.state !== 'hand_over') {
-      cardsHtml = `<div class="seat-cards" style="position:relative;margin-top:4px;">`;
+    const showingCards = player.hasCards &&
+      !['waiting', 'game_over'].includes(state.state);
+    if (showingCards) {
+      cardsHtml = `<div style="display:flex;gap:3px;margin-top:4px;">`;
       for (const card of player.cards) {
         if (card.rank === '?') {
-          cardsHtml += `<div class="seat-card-small"><div class="card-back" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:10px;color:rgba(201,168,76,0.4);background:linear-gradient(135deg,#1a3a5c,#0d2040);">♦</div></div>`;
+          cardsHtml += `<div class="seat-card-small"><div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1a3a5c,#0d2040);border-radius:3px;color:rgba(201,168,76,0.5);font-size:10px;">♦</div></div>`;
         } else {
-          const color = isRed(card.suit) ? 'red' : 'black';
-          const suitSym = suitSymbol(card.suit);
-          cardsHtml += `<div class="seat-card-small"><div style="color:${isRed(card.suit)?'#c0392b':'#111'};padding:2px;font-size:9px;font-weight:700;font-family:'Playfair Display',serif;">${card.rank}${suitSym}</div></div>`;
+          const col = isRed(card.suit) ? '#c0392b' : '#111';
+          cardsHtml += `<div class="seat-card-small" style="background:white;"><div style="color:${col};padding:2px;font-size:9px;font-weight:700;">${card.rank}${suitSymbol(card.suit)}</div></div>`;
         }
       }
       cardsHtml += `</div>`;
     }
 
-    const allInBadge = player.allIn ? '<div class="allin-badge">ALL-IN</div>' : '';
+    const allInBadge = player.allIn ? `<div class="allin-badge">ALL IN</div>` : '';
+    const timerRing = isActive && !player.folded && !player.allIn ? `
+      <svg class="action-timer-ring" viewBox="0 0 60 60">
+        <circle cx="30" cy="30" r="28" fill="none" stroke="rgba(201,168,76,0.5)" stroke-width="2.5" stroke-dasharray="176" stroke-dashoffset="0"/>
+      </svg>` : '';
 
+    const seatEl = document.createElement('div');
+    seatEl.className = 'player-seat';
+    seatEl.style.cssText = `top:${pos.top};left:${pos.left};transform:translate(${pos.tx},${pos.ty});`;
     seatEl.innerHTML = `
       <div class="${avatarClass}" style="position:relative;">
-        ${emoji}
-        ${allInBadge}
-        ${isActive ? renderTimerRing() : ''}
+        ${emoji}${allInBadge}${timerRing}
       </div>
       <div class="seat-name">${escHtml(player.name)}${isMe ? ' (you)' : ''}</div>
-      <div class="seat-chips">${player.chips > 0 ? player.chips.toLocaleString() : (player.finishPosition ? `#${player.finishPosition}` : 'OUT')}</div>
+      <div class="seat-chips">${isEliminated ? `#${player.finishPosition}` : player.chips.toLocaleString()}</div>
       ${cardsHtml}
-      <div class="seat-bet" style="top:${BET_OFFSETS[visualPos]?.top||'-30px'};left:${BET_OFFSETS[visualPos]?.left||'0'}">
-        ${player.bet > 0 ? player.bet.toLocaleString() : ''}
-      </div>
     `;
+
+    // Bet chip
+    if (player.bet > 0) {
+      const betEl = document.createElement('div');
+      betEl.style.cssText = `
+        position:absolute;
+        top:calc(${pos.top} + ${betPos.top});
+        left:calc(${pos.left} + ${betPos.left});
+        transform:translate(${betPos.ltx || '-50%'}, 0);
+        background:rgba(0,0,0,0.75);
+        border:1px solid rgba(201,168,76,0.4);
+        border-radius:12px;
+        padding:2px 8px;
+        font-size:11px;
+        color:var(--cream);
+        white-space:nowrap;
+        pointer-events:none;
+        z-index:25;
+      `;
+      betEl.textContent = player.bet.toLocaleString();
+      seatsEl.appendChild(betEl);
+    }
 
     seatsEl.appendChild(seatEl);
 
     // Dealer button
     if (isDealer) {
-      const dealerEl = document.createElement('div');
-      dealerEl.className = 'dealer-btn';
-      dealerEl.textContent = 'D';
-      dealerEl.style.cssText = `
-        top: calc(${posConfig.top} + 28px);
-        left: calc(${posConfig.left} + 28px);
-      `;
-      seatsEl.appendChild(dealerEl);
+      const d = document.createElement('div');
+      d.className = 'dealer-btn';
+      d.textContent = 'D';
+      d.style.cssText = `top:calc(${pos.top} + 36px);left:calc(${pos.left} + 36px);`;
+      seatsEl.appendChild(d);
     }
-
-    // SB/BB buttons
-    if (isSB) {
-      const sbEl = document.createElement('div');
-      sbEl.className = 'blind-btn sb';
-      sbEl.textContent = 'SB';
-      sbEl.style.cssText = `top: calc(${posConfig.top} - 10px); left: calc(${posConfig.left} + 30px);`;
-      seatsEl.appendChild(sbEl);
+    if (isSB && state.handNumber > 0) {
+      const sb = document.createElement('div');
+      sb.className = 'blind-btn sb';
+      sb.textContent = 'SB';
+      sb.style.cssText = `top:calc(${pos.top} - 12px);left:calc(${pos.left} + 30px);`;
+      seatsEl.appendChild(sb);
     }
-    if (isBB) {
-      const bbEl = document.createElement('div');
-      bbEl.className = 'blind-btn bb';
-      bbEl.textContent = 'BB';
-      bbEl.style.cssText = `top: calc(${posConfig.top} - 10px); left: calc(${posConfig.left} + 52px);`;
-      seatsEl.appendChild(bbEl);
+    if (isBB && state.handNumber > 0) {
+      const bb = document.createElement('div');
+      bb.className = 'blind-btn bb';
+      bb.textContent = 'BB';
+      bb.style.cssText = `top:calc(${pos.top} - 12px);left:calc(${pos.left} + 54px);`;
+      seatsEl.appendChild(bb);
     }
   }
 
-  // Community cards
   renderCommunityCards(state);
 
-  // Pot
-  const potEl = document.getElementById('pot-display');
-  potEl.textContent = state.pot > 0 ? `Pot: ${state.pot.toLocaleString()}` : '';
-}
-
-function renderTimerRing() {
-  return `
-    <svg class="action-timer-ring" viewBox="0 0 60 60">
-      <circle cx="30" cy="30" r="28" fill="none" stroke="rgba(201,168,76,0.4)" stroke-width="2"/>
-    </svg>
-  `;
+  // Pot display
+  document.getElementById('pot-display').textContent =
+    state.pot > 0 ? `Pot: ${state.pot.toLocaleString()}` : '';
 }
 
 function renderCommunityCards(state) {
   const ccEl = document.getElementById('community-cards');
+  const prev = ccEl.children.length;
   ccEl.innerHTML = '';
-
   for (let i = 0; i < state.communityCards.length; i++) {
     const card = state.communityCards[i];
-    const cardEl = buildCardElement(card, 52, 74);
-    cardEl.style.animationDelay = (i * 0.1) + 's';
-    ccEl.appendChild(cardEl);
+    const el = buildCardElement(card, 50, 70);
+    if (i >= prev) el.classList.add('deal-anim');
+    el.style.animationDelay = (i >= prev ? (i - prev) * 0.1 : 0) + 's';
+    ccEl.appendChild(el);
   }
 }
 
 function buildCardElement(card, w, h) {
   const el = document.createElement('div');
-  el.className = 'card deal-anim';
+  el.className = 'card';
   el.style.width = w + 'px';
   el.style.height = h + 'px';
 
-  if (card.rank === '?') {
-    el.innerHTML = `<div class="card-back" style="width:100%;height:100%"><div class="card-back-pattern"></div></div>`;
+  if (!card || card.rank === '?') {
+    el.innerHTML = `<div class="card-back" style="width:100%;height:100%;"><div class="card-back-pattern"></div></div>`;
     return el;
   }
 
   const red = isRed(card.suit);
   const sym = suitSymbol(card.suit);
-  const colorClass = red ? 'red' : 'black';
-
+  const col = red ? '#c0392b' : '#111';
   el.innerHTML = `
-    <div class="card-face" style="height:100%;display:flex;flex-direction:column;justify-content:space-between;padding:4px;background:white;border-radius:7px;">
-      <div class="card-rank-suit">
-        <div class="card-rank ${colorClass}" style="font-size:15px;font-weight:700;font-family:'Playfair Display',serif;line-height:1;">${card.rank}</div>
-        <div class="card-suit-small ${colorClass}" style="font-size:11px;line-height:1;">${sym}</div>
+    <div style="height:100%;display:flex;flex-direction:column;justify-content:space-between;padding:4px;background:white;border-radius:7px;">
+      <div style="line-height:1;">
+        <div style="color:${col};font-size:14px;font-weight:700;font-family:'Playfair Display',serif;">${card.rank}</div>
+        <div style="color:${col};font-size:10px;">${sym}</div>
       </div>
-      <div style="display:flex;align-items:center;justify-content:center;font-size:28px;" class="${colorClass}">${sym}</div>
-      <div class="card-rank-suit bottom" style="transform:rotate(180deg)">
-        <div class="card-rank ${colorClass}" style="font-size:15px;font-weight:700;font-family:'Playfair Display',serif;line-height:1;">${card.rank}</div>
-        <div class="card-suit-small ${colorClass}" style="font-size:11px;line-height:1;">${sym}</div>
+      <div style="text-align:center;font-size:24px;color:${col};">${sym}</div>
+      <div style="line-height:1;transform:rotate(180deg);">
+        <div style="color:${col};font-size:14px;font-weight:700;font-family:'Playfair Display',serif;">${card.rank}</div>
+        <div style="color:${col};font-size:10px;">${sym}</div>
       </div>
     </div>
   `;
   return el;
 }
 
+// ─── MY CARDS ───
 function renderMyCards(state) {
   const el = document.getElementById('my-cards');
   el.innerHTML = '';
-
   if (myPlayerIndex < 0) return;
   const me = state.players[myPlayerIndex];
-  if (!me || !me.hasCards || state.state === 'waiting') return;
-
+  if (!me || !me.hasCards) return;
   for (const card of me.cards) {
-    const cardEl = buildCardElement(card, 60, 86);
+    const cardEl = buildCardElement(card, 64, 90);
     el.appendChild(cardEl);
   }
 }
@@ -1393,54 +1402,67 @@ function renderActions(state) {
   }
 
   const me = state.players[myPlayerIndex];
-  const isMyTurn = state.currentPlayerIndex === myPlayerIndex;
-  const inHand = me.hasCards && !me.folded;
+  const bettingStates = ['preflop', 'flop', 'turn', 'river'];
+  const isMyTurn = state.currentPlayerIndex === myPlayerIndex && bettingStates.includes(state.state);
 
-  if (!inHand || me.allIn || state.state === 'hand_over' || state.state === 'game_over' || state.state === 'showdown' || state.state === 'waiting') {
+  // Hide actions when not my turn
+  if (!isMyTurn || !me.hasCards || me.folded || me.allIn || me.chips === 0) {
     actionArea.style.display = 'none';
-    if (state.state === 'waiting') {
-      statusBar.textContent = '';
+    raiseMode = false;
+
+    // Status message
+    if (['hand_over', 'showdown'].includes(state.state)) {
+      statusBar.textContent = 'Hand complete — next hand starting soon...';
     } else if (me.folded) {
-      statusBar.textContent = 'You folded — watching the hand...';
+      statusBar.textContent = 'You folded — watching the hand';
     } else if (me.allIn) {
-      statusBar.textContent = `You're all-in — running it out...`;
+      statusBar.textContent = "You're all-in — running out the board...";
     } else if (me.finishPosition) {
-      statusBar.textContent = `You finished #${me.finishPosition}`;
+      statusBar.textContent = `You finished in position #${me.finishPosition}`;
+    } else if (bettingStates.includes(state.state) && state.currentPlayerIndex >= 0) {
+      const acting = state.players[state.currentPlayerIndex];
+      statusBar.textContent = acting ? `Waiting for ${acting.name}...` : '';
     } else {
       statusBar.textContent = '';
     }
     return;
   }
 
-  if (!isMyTurn) {
-    actionArea.style.display = 'none';
-    const actingPlayer = state.players[state.currentPlayerIndex];
-    statusBar.textContent = actingPlayer ? `Waiting for ${actingPlayer.name}...` : '';
-    return;
-  }
-
-  // My turn
+  // It's my turn!
   actionArea.style.display = 'flex';
-  statusBar.textContent = "Your turn — act!";
+  statusBar.textContent = '⚡ Your turn — act now!';
 
-  const canCheck = me.bet >= state.currentBet;
-  const callAmt = Math.min(state.currentBet - me.bet, me.chips);
-  const minRaise = state.currentBet + Math.max(state.blinds.big, 0);
+  const callAmt = Math.min(Math.max(0, state.currentBet - me.bet), me.chips);
+  const canCheck = callAmt === 0;
+  const minRaiseTo = state.currentBet + Math.max(state.blinds.big, state.currentBet > 0 ? state.currentBet : state.blinds.big);
+  const clampedMin = Math.min(minRaiseTo, me.chips + me.bet);
 
-  document.getElementById('btn-check').style.display = canCheck ? 'block' : 'none';
-  document.getElementById('btn-call').style.display = !canCheck ? 'block' : 'none';
+  document.getElementById('btn-check').style.display = canCheck ? 'inline-block' : 'none';
+  document.getElementById('btn-call').style.display = !canCheck ? 'inline-block' : 'none';
   if (!canCheck) {
-    document.getElementById('btn-call').textContent = callAmt >= me.chips ? `Call All-In (${callAmt})` : `Call ${callAmt}`;
+    const isAllInCall = callAmt >= me.chips;
+    document.getElementById('btn-call').textContent = isAllInCall ? `Call All-In (${callAmt})` : `Call ${callAmt}`;
   }
+
+  // Hide raise if we can't raise (not enough chips)
+  const canRaise = me.chips > callAmt;
+  document.getElementById('btn-raise').style.display = canRaise ? 'inline-block' : 'none';
 
   // Raise input
-  if (!raiseMode) document.getElementById('raise-row').style.display = 'none';
-  document.getElementById('raise-input').min = minRaise;
-  document.getElementById('raise-input').value = minRaise;
-  document.getElementById('raise-to-val').textContent = minRaise;
+  if (!raiseMode) {
+    document.getElementById('raise-row').style.display = 'none';
+    document.getElementById('raise-confirm-row').style.display = 'none';
+  }
+  const raiseInput = document.getElementById('raise-input');
+  raiseInput.min = clampedMin;
+  raiseInput.max = me.chips + me.bet;
+  if (!raiseMode || parseInt(raiseInput.value) < clampedMin) {
+    raiseInput.value = clampedMin;
+    document.getElementById('raise-to-val').textContent = clampedMin;
+  }
 
-  document.getElementById('raise-input').oninput = () => {
-    document.getElementById('raise-to-val').textContent = document.getElementById('raise-input').value;
+  raiseInput.oninput = () => {
+    document.getElementById('raise-to-val').textContent = raiseInput.value;
   };
 }
 
@@ -1448,34 +1470,38 @@ function toggleRaise() {
   raiseMode = !raiseMode;
   document.getElementById('raise-row').style.display = raiseMode ? 'flex' : 'none';
   document.getElementById('raise-confirm-row').style.display = raiseMode ? 'flex' : 'none';
-  document.getElementById('raise-confirm-row').style.justifyContent = 'center';
+  if (raiseMode) document.getElementById('raise-input').focus();
 }
 
 function confirmRaise() {
   const amount = parseInt(document.getElementById('raise-input').value);
-  sendAction('raise', amount);
+  if (!amount || isNaN(amount)) return;
   raiseMode = false;
   document.getElementById('raise-row').style.display = 'none';
   document.getElementById('raise-confirm-row').style.display = 'none';
+  sendAction('raise', amount);
 }
 
 function setRaisePct(mult) {
-  if (!gameState) return;
-  const pot = gameState.pot;
+  if (!gameState || myPlayerIndex < 0) return;
   const me = gameState.players[myPlayerIndex];
-  const cb = gameState.currentBet;
-  const callAmt = Math.min(cb - me.bet, me.chips);
+  const pot = gameState.pot;
+  const callAmt = Math.min(Math.max(0, gameState.currentBet - me.bet), me.chips);
   const totalPot = pot + callAmt;
-  const raiseAmt = Math.round(totalPot * mult);
-  const totalBet = Math.min(cb + raiseAmt, me.chips + me.bet);
-  document.getElementById('raise-input').value = totalBet;
-  document.getElementById('raise-to-val').textContent = totalBet;
+  const raiseBy = Math.round(totalPot * mult);
+  const totalBet = Math.min(gameState.currentBet + raiseBy, me.chips + me.bet);
+  const minRaiseTo = gameState.currentBet + Math.max(gameState.blinds.big, gameState.currentBet);
+  const final = Math.max(totalBet, Math.min(minRaiseTo, me.chips + me.bet));
+  document.getElementById('raise-input').value = final;
+  document.getElementById('raise-to-val').textContent = final;
 }
 
 function sendAction(action, amount) {
   socket.emit('action', { action, amount: amount || 0 });
   document.getElementById('action-area').style.display = 'none';
   raiseMode = false;
+  document.getElementById('raise-row').style.display = 'none';
+  document.getElementById('raise-confirm-row').style.display = 'none';
 }
 
 function startGame() {
@@ -1484,29 +1510,31 @@ function startGame() {
 
 // ─── HAND RESULT ───
 function showHandResult(result) {
-  const overlay = document.getElementById('result-overlay');
-  const handResultText = document.getElementById('hand-result-text');
-
-  if (!result.results || result.results.length === 0) return;
+  if (!result || !result.results || result.results.length === 0) return;
 
   const winner = result.results.find(r => r.won > 0);
   if (!winner) return;
 
   document.getElementById('result-winner').textContent = winner.playerName + ' wins!';
   document.getElementById('result-hand').textContent =
-    winner.uncontested ? 'Uncontested' : (winner.hand ? winner.hand.name.toUpperCase() : '');
+    winner.uncontested ? 'Uncontested pot' :
+    (winner.hand ? winner.hand.name.toUpperCase() : '');
   document.getElementById('result-chips').textContent = '+' + winner.won.toLocaleString();
 
+  const overlay = document.getElementById('result-overlay');
   overlay.classList.add('visible');
-  setTimeout(() => overlay.classList.remove('visible'), 4000);
 
-  // Show all hands at showdown
+  clearTimeout(handResultTimeout);
+  handResultTimeout = setTimeout(() => overlay.classList.remove('visible'), 4500);
+
+  // Show all hands in table center text
+  const handResultText = document.getElementById('hand-result-text');
   if (result.results.length > 1 && !result.results[0].uncontested) {
-    const parts = result.results.map(r =>
-      `${r.playerName}: ${r.hand ? r.hand.name : 'folded'}`
-    );
+    const parts = result.results
+      .filter(r => r.hand)
+      .map(r => `${r.playerName}: ${r.hand.name}`);
     handResultText.textContent = parts.join('  ·  ');
-    setTimeout(() => handResultText.textContent = '', 5000);
+    setTimeout(() => { handResultText.textContent = ''; }, 5000);
   }
 }
 
@@ -1514,19 +1542,20 @@ function showHandResult(result) {
 function showGameOver(data) {
   const overlay = document.getElementById('gameover-overlay');
   overlay.classList.add('visible');
+  overlay.style.display = 'flex';
 
-  const winner = data.winners && data.winners[0];
+  const sorted = [...(data.winners || [])].sort((a, b) => a.position - b.position);
+  const winner = sorted[0];
   document.getElementById('go-winner').textContent = winner ? `🏆 ${winner.name}` : '';
 
   const standings = document.getElementById('go-standings');
   standings.innerHTML = '';
-  if (data.winners) {
-    for (const w of data.winners) {
-      const row = document.createElement('div');
-      row.className = 'standing-row';
-      row.innerHTML = `<span>${escHtml(w.name)}</span><span class="place-badge">#${w.position}</span>`;
-      standings.appendChild(row);
-    }
+  for (const w of sorted) {
+    const row = document.createElement('div');
+    row.className = 'standing-row';
+    const medal = w.position === 1 ? '🥇' : w.position === 2 ? '🥈' : w.position === 3 ? '🥉' : `#${w.position}`;
+    row.innerHTML = `<span>${medal} ${escHtml(w.name)}</span><span class="place-badge">${w.position === 1 ? 'WINNER' : `#${w.position}`}</span>`;
+    standings.appendChild(row);
   }
 }
 
@@ -1540,7 +1569,6 @@ function addChat(msg, isSystem = false) {
   const el = document.getElementById('chat-messages');
   const div = document.createElement('div');
   div.className = 'chat-msg';
-
   if (isSystem) {
     div.innerHTML = `<span class="chat-system">${escHtml(msg)}</span>`;
   } else {
@@ -1551,7 +1579,6 @@ function addChat(msg, isSystem = false) {
       div.innerHTML = `<span class="chat-text">${escHtml(msg)}</span>`;
     }
   }
-
   el.appendChild(div);
   el.scrollTop = el.scrollHeight;
 }
@@ -1576,72 +1603,51 @@ function copyInvite() {
     const orig = btn.textContent;
     btn.textContent = 'COPIED!';
     setTimeout(() => btn.textContent = orig, 2000);
+  }).catch(() => {
+    prompt('Copy this invite link:', url);
   });
 }
 
-function updateLobby() {
-  const startBtn = document.getElementById('start-btn');
-  const waitingMsg = document.getElementById('waiting-msg');
-  if (isHost) {
-    startBtn.style.display = 'block';
-    waitingMsg.style.display = 'none';
-  }
-  const code = document.getElementById('lobby-code');
-  const link = document.getElementById('lobby-link');
-  code.textContent = gameId;
-  link.textContent = window.location.href;
+// ─── UTILS ───
+function suitSymbol(s) { return {s:'♠',h:'♥',d:'♦',c:'♣'}[s] || s; }
+function isRed(s) { return s === 'h' || s === 'd'; }
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-
+function getPlayerEmoji(name) {
+  const emojis = ['🎩','🃏','🦊','🐺','🦁','🐯','🐻','🦝','🦈'];
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) & 0xffffffff;
+  return emojis[Math.abs(h) % emojis.length];
+}
+function formatAction(a) {
+  switch(a.action) {
+    case 'fold': return 'folds';
+    case 'check': return 'checks';
+    case 'call': return `calls ${a.amount.toLocaleString()}`;
+    case 'raise': return `raises to ${a.amount.toLocaleString()}`;
+    case 'bet': return `bets ${a.amount.toLocaleString()}`;
+    case 'allin': return `goes all-in for ${a.amount.toLocaleString()}`;
+    default: return a.action;
+  }
+}
 function showStatus(msg, type) {
   const el = document.getElementById('status-bar');
   el.textContent = msg;
   el.style.color = type === 'error' ? '#e74c3c' : 'var(--cream-dark)';
-  setTimeout(() => el.style.color = 'var(--cream-dark)', 3000);
-}
-
-// ─── UTILS ───
-function suitSymbol(suit) {
-  return { s: '♠', h: '♥', d: '♦', c: '♣' }[suit] || suit;
-}
-
-function isRed(suit) { return suit === 'h' || suit === 'd'; }
-
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function getPlayerEmoji(name) {
-  const emojis = ['🎩','🃏','🦊','🐺','🦁','🐯','🐻','🦝','🦈'];
-  let hash = 0;
-  for (const c of name) hash = (hash * 31 + c.charCodeAt(0)) & 0xffffffff;
-  return emojis[Math.abs(hash) % emojis.length];
-}
-
-function formatAction(action) {
-  switch(action.action) {
-    case 'fold': return 'folds';
-    case 'check': return 'checks';
-    case 'call': return `calls ${action.amount}`;
-    case 'raise': return `raises to ${action.amount}`;
-    case 'bet': return `bets ${action.amount}`;
-    case 'allin': return `goes all-in for ${action.amount}`;
-    default: return action.action;
-  }
+  setTimeout(() => el.style.color = '', 3000);
 }
 
 // ─── INIT ───
-// If no playerId in session, check URL for game code and redirect to lobby
-if (!playerId) {
-  // Check if they have a game id from URL but no session — redirect to join
-  const savedId = sessionStorage.getItem('gameId');
-  if (!savedId || savedId !== gameId) {
-    window.location.href = '/?game=' + gameId;
-  }
-}
-
-// Set lobby link
-document.getElementById('lobby-link').textContent = window.location.href;
 document.getElementById('lobby-code').textContent = gameId;
+document.getElementById('lobby-link').textContent = window.location.href;
+document.getElementById('game-code-btn').textContent = gameId;
+
+if (!playerId) {
+  window.location.href = '/?game=' + gameId;
+}
 </script>
 </body>
 </html>

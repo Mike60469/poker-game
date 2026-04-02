@@ -14,15 +14,15 @@ const io     = new Server(server, { cors: { origin: '*' } });
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
-const games        = new Map();
+const games         = new Map();
 const playerSockets = new Map(); // playerId -> socketId
 
-// Clean up stale games
+// Cleanup stale games
 setInterval(() => {
   const now = Date.now();
   for (const [id, game] of games.entries()) {
-    const age        = now - game.createdAt;
-    const finishAge  = game.finishedAt ? now - game.finishedAt : Infinity;
+    const age       = now - game.createdAt;
+    const finishAge = game.finishedAt ? now - game.finishedAt : Infinity;
     if (age > 4 * 3600_000 || finishAge > 30 * 60_000) games.delete(id);
   }
 }, 5 * 60_000);
@@ -61,7 +61,7 @@ app.get('/api/games/:id', (req, res) => {
 app.get('/game/:id', (req, res) => res.sendFile(path.join(__dirname, '../public/game.html')));
 app.get('/',         (req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
 
-// ─── BROADCAST HELPERS ─────────────────────────────────────────────────────
+// ─── BROADCAST ─────────────────────────────────────────────────────────────
 
 function broadcastState(game) {
   for (const p of game.players) {
@@ -79,11 +79,11 @@ function broadcastHandResult(game) {
   if (!last) return;
   const payload = {
     results: last.results.map(r => ({
-      playerName: r.player.name,
-      playerId:   r.player.id,
-      won:        r.won,
-      hand:       r.hand ? { name: r.hand.name, rank: r.hand.rank } : null,
-      cards:      r.player.cards,
+      playerName:  r.player.name,
+      playerId:    r.player.id,
+      won:         r.won,
+      hand:        r.hand ? { name: r.hand.name, rank: r.hand.rank } : null,
+      cards:       r.player.cards,
       uncontested: r.uncontested || false
     })),
     community: game.communityCards
@@ -107,39 +107,39 @@ function scheduleNextHand(game) {
       io.to(`game:${g.id}`).emit('game_over', payload);
       io.to(`spec:${g.id}`).emit('game_over', payload);
     }
-  }, 5000);
+  }, 5000); // 5s to show results before next hand
 }
 
+// Wire up all game callbacks — called once when host starts the game
 function hookGame(game) {
-  game.emit = (event, data) => {
-    io.to(`game:${game.id}`).emit(event, data);
-    io.to(`spec:${game.id}`).emit(event, data);
+  // Fired whenever state changes mid-hand (street dealt, action taken)
+  game.onStateChange = () => {
+    broadcastState(game);
   };
 
-  // Called when the action timer fires internally
-  game.onTimerAction = () => {
+  // Fired exactly once per hand, from _resolveHand(), after HAND_OVER is set
+  // This is the SINGLE place that triggers next-hand scheduling
+  game.onHandOver = () => {
     broadcastState(game);
-    if (game.state === GAME_STATES.HAND_OVER || game.state === GAME_STATES.SHOWDOWN) {
-      broadcastHandResult(game);
+    broadcastHandResult(game);
+    if (game.state === GAME_STATES.GAME_OVER) {
+      io.to(`game:${game.id}`).emit('game_over', { winners: game.winners });
+      io.to(`spec:${game.id}`).emit('game_over', { winners: game.winners });
+    } else {
       scheduleNextHand(game);
     }
   };
 
-  // Called whenever a new community card street is dealt (including during all-in runout)
-  game.onStreetDealt = () => {
-    broadcastState(game);
-    // If we've reached showdown via runout, wait for runout to finish then broadcast result
-    if (game.state === GAME_STATES.SHOWDOWN || game.state === GAME_STATES.HAND_OVER) {
-      broadcastHandResult(game);
-      scheduleNextHand(game);
-    }
+  game.onBlindLevelUp = (data) => {
+    io.to(`game:${game.id}`).emit('blind_level_up', data);
+    io.to(`spec:${game.id}`).emit('blind_level_up', data);
   };
 }
 
 // ─── SOCKET.IO ─────────────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
-  let currentGameId  = null;
+  let currentGameId   = null;
   let currentPlayerId = null;
 
   const getGame = () => currentGameId ? games.get(currentGameId) : null;
@@ -150,8 +150,8 @@ io.on('connection', (socket) => {
     if (!game) { socket.emit('error', { message: 'Game not found' }); return; }
 
     currentGameId = gid;
+    const player  = game.players.find(p => p.id === playerId);
 
-    const player = game.players.find(p => p.id === playerId);
     if (!player) {
       socket.join(`spec:${gid}`);
       socket.emit('game_state', game.getPublicState(null));
@@ -161,7 +161,6 @@ io.on('connection', (socket) => {
     currentPlayerId = playerId;
     playerSockets.set(playerId, socket.id);
     game.setConnected(playerId, true);
-
     socket.join(`game:${gid}`);
     socket.emit('joined', { playerId, gameId: gid, isHost: game.hostId === playerId });
     socket.emit('game_state', game.getPublicState(playerId));
@@ -171,8 +170,12 @@ io.on('connection', (socket) => {
   socket.on('start_game', () => {
     const game = getGame();
     if (!game) return;
-    if (game.hostId !== currentPlayerId) { socket.emit('error', { message: 'Only the host can start' }); return; }
-    if (!game.canStart()) { socket.emit('error', { message: `Need at least ${game.minPlayers} players` }); return; }
+    if (game.hostId !== currentPlayerId) {
+      socket.emit('error', { message: 'Only the host can start' }); return;
+    }
+    if (!game.canStart()) {
+      socket.emit('error', { message: `Need at least ${game.minPlayers} players` }); return;
+    }
     hookGame(game);
     game.startGame();
     broadcastState(game);
@@ -185,13 +188,16 @@ io.on('connection', (socket) => {
     const result = game.handleAction(currentPlayerId, action, amount || 0);
     if (result.error) { socket.emit('error', { message: result.error }); return; }
 
+    // Broadcast the action label to chat
     io.to(`game:${currentGameId}`).emit('player_action', result.actionResult);
+
+    // Broadcast updated state immediately
     broadcastState(game);
 
-    if (game.state === GAME_STATES.HAND_OVER || game.state === GAME_STATES.SHOWDOWN) {
-      broadcastHandResult(game);
-      scheduleNextHand(game);
-    }
+    // If the hand ended synchronously (e.g. everyone folded to one player),
+    // onHandOver was already called inside _applyAction -> _resolveHand.
+    // scheduleNextHand is idempotent so calling it again is safe (guard prevents double).
+    // We do NOT call scheduleNextHand here — onHandOver handles it.
   });
 
   socket.on('chat', ({ message }) => {
@@ -212,8 +218,8 @@ io.on('connection', (socket) => {
     game.setConnected(currentPlayerId, false);
     playerSockets.delete(currentPlayerId);
     io.to(`game:${currentGameId}`).emit('player_disconnected', { playerId: currentPlayerId });
-    // The game's own action timer will auto-fold them if it's their turn
-    console.log(`[Disconnect] ${currentPlayerId} disconnected from ${currentGameId}`);
+    console.log(`[Disconnect] ${currentPlayerId} left game ${currentGameId}`);
+    // Game's own action timer will auto-fold them if it's their turn
   });
 });
 
